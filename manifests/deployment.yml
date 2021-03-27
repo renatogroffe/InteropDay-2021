@@ -1,0 +1,31 @@
+apiVersion : apps/v1
+kind: Deployment
+metadata:
+  name: APPLICATION-NAME 
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: APPLICATION-NAME
+  template:
+    metadata:
+      labels:
+        app: APPLICATION-NAME
+    spec:
+      containers:
+        - name: APPLICATION-NAME
+          image: CR-DEPLOYMENT/IMAGE-DEPLOYMENT:TAG-DEPLOYMENT
+          env:
+            - name: WorkerConfigurations__Hosts
+              value: https://github.com|https://stackoverflow.com|https://siteinvalido.com.br
+            - name: WorkerConfigurations__DBMonitoramento
+              value: DBMonitoracao
+            - name: WorkerConfigurations__CollectionMonitoramento
+              value: MonitorSites
+            - name: WorkerConfigurations__Intervalo
+              value: "60000"
+            - name: WorkerConfigurations__ConnectionDBMonitoramento
+              valueFrom:
+                secretKeyRef:
+                  name: monitoramentosites-secret
+                  key: ConexaoMongoDB

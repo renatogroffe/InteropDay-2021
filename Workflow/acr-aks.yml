@@ -1,0 +1,87 @@
+name: build-acr_deployment-aks
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  NOME_APLICACAO: monitoramentosites
+  NOME_IMAGEM: monitorsites
+  PATH_PROJETO: ./WorkerMonitoramentoSites
+  AZURE_RESOURCE_GROUP_K8S: TesteKubernetes
+  AZURE_CLUSTER_K8S: AKSCluster
+  NAMESPACE_K8S: interop2021
+
+jobs:
+
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2.3.4
+       
+    - name: Login no Azure Container Registry
+      uses: docker/login-action@v1.8.0
+      with:
+        registry: ${{ secrets.AZURECR_REGISTRY }}
+        username: ${{ secrets.AZURECR_USERNAME }}
+        password: ${{ secrets.AZURECR_PASSWORD }}
+
+    - name: Build e Push no Azure Container Registry
+      run: |
+        cd ${{ env.PATH_PROJETO }}
+        docker build . --file Dockerfile --tag ${{ secrets.AZURECR_REGISTRY }}/${{ env.NOME_IMAGEM }}:latest
+        docker tag ${{ secrets.AZURECR_REGISTRY }}/${{ env.NOME_IMAGEM }}:latest ${{ secrets.AZURECR_REGISTRY }}/${{ env.NOME_IMAGEM }}:$GITHUB_RUN_NUMBER
+        docker push --all-tags ${{ secrets.AZURECR_REGISTRY }}/${{ env.NOME_IMAGEM }}
+
+  deployment:
+    needs: [build]
+    
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2.3.4
+
+    - name: Azure Kubernetes Service - set context - Conectando ao cluster
+      uses: Azure/aks-set-context@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }} 
+        resource-group: ${{ env.AZURE_RESOURCE_GROUP_K8S }}
+        cluster-name:  ${{ env.AZURE_CLUSTER_K8S }}
+
+    - name: Azure Kubernetes Service - Criando Secret para acesso ao Container Registry
+      uses: Azure/k8s-create-secret@v1.1
+      with:
+        namespace: ${{ env.NAMESPACE_K8S }}
+        container-registry-url: ${{ secrets.AZURECR_REGISTRY }}
+        container-registry-username: ${{ secrets.AZURECR_USERNAME }}
+        container-registry-password: ${{ secrets.AZURECR_PASSWORD }}
+        secret-name: webapp-k8s-secret
+
+    - name: Configurar manifesto de Deployment
+      run: |
+        sed -i 's/APPLICATION-NAME/${{ env.NOME_APLICACAO }}/' ./manifests/deployment.yml
+        sed -i 's/CR-DEPLOYMENT/${{ secrets.AZURECR_REGISTRY }}/' ./manifests/deployment.yml
+        sed -i 's/IMAGE-DEPLOYMENT/${{ env.NOME_IMAGEM }}/' ./manifests/deployment.yml
+        sed -i 's/TAG-DEPLOYMENT/${{ github.run_number }}/' ./manifests/deployment.yml
+    
+    - name: Azure Kubernetes Service - Deployment de Web App
+      uses: Azure/k8s-deploy@v1.3
+      with:
+        namespace: ${{ env.NAMESPACE_K8S }}
+        manifests: |
+          manifests/deployment.yml
+        images: |
+          '${{ secrets.AZURECR_REGISTRY }}/${{ env.NOME_IMAGEM }}:${{ github.run_number }}'
+        imagepullsecrets: |
+          webapp-k8s-secret
+
+    - name: Registrar histórico da execução no Kubernetes
+      env:
+        HISTORICO_DEPLOYMENT: "Workflow = ${{ github.workflow }} :: Execucao = ${{ github.run_number }} :: ${{ github.event.head_commit.message }}"
+      run: kubectl annotate deployment ${{ env.NOME_APLICACAO }} kubernetes.io/change-cause="${{ env.HISTORICO_DEPLOYMENT }}" -n ${{ env.NAMESPACE_K8S }}
+
+    - name: Listar histórico de deployments no Kubernetes
+      run: kubectl rollout history deployments -n ${{ env.NAMESPACE_K8S }}
